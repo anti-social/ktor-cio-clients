@@ -13,6 +13,11 @@ import kotlinx.coroutines.experimental.io.*
 import kotlinx.io.core.*
 import java.nio.charset.*
 
+open class S3Exception(val status: HttpStatusCode) : Exception()
+class BadRequestException(status: HttpStatusCode) : S3Exception(status)
+class NotAuthorizedException(status: HttpStatusCode) : S3Exception(status)
+class KeyNotFoundException(status: HttpStatusCode) : S3Exception(status)
+
 // http://docs.amazonwebservices.com/AmazonS3/latest/dev/RESTAuthentication.html#ConstructingTheAuthenticationHeader
 // https://github.com/jubos/fake-s3
 class S3(
@@ -86,11 +91,13 @@ class S3(
         path: String,
         range: LongRange? = null
     ): ByteReadChannel {
-        return request(HttpMethod.Get, path, Headers.build {
+        val response = request(HttpMethod.Get, path, Headers.build {
             if (range != null) {
                 set("Range", "bytes=${range.start}-${range.endInclusive}")
             }
-        }).content
+        })
+        checkStatus(response.status)
+        return response.content
     }
 
     suspend fun put(
@@ -100,7 +107,7 @@ class S3(
         contentType: ContentType? = null
     ): Long {
         val length = content.contentLength ?: error("contentLength must be set for content")
-        request(
+        val response = request(
             HttpMethod.Put,
             path,
             headers = Headers.build {
@@ -110,6 +117,7 @@ class S3(
             },
             content = content
         )
+        checkStatus(response.status)
 
         return length
     }
@@ -159,6 +167,19 @@ class S3(
         )
     } else {
         headers
+    }
+
+    private fun checkStatus(status: HttpStatusCode) {
+        if (status.isSuccess()) {
+            return
+        }
+        when (status) {
+            HttpStatusCode.Continue -> return
+            HttpStatusCode.BadRequest -> throw BadRequestException(status)
+            HttpStatusCode.Forbidden -> throw NotAuthorizedException(status)
+            HttpStatusCode.NotFound -> throw KeyNotFoundException(status)
+            else -> throw S3Exception(status)
+        }
     }
 }
 
